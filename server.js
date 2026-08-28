@@ -298,6 +298,46 @@ app.post('/webhooks/sapo/order-created', async (req, res) => {
   res.status(200).send('ok');
 });
 
+/**
+ * Small ops helpers, gated by the same shared token as the Sapo webhook
+ * receiver (config.sapoWebhookToken) — not a real auth system, just enough
+ * to keep these off Google and out of casual reach. Exist so the one-off
+ * webhook registration (normally `node scripts/register-sapo-webhook.js`)
+ * can be triggered over HTTP too, since this host has no shell access on
+ * the free plan and the Sapo API credentials never need to leave this
+ * service to do it.
+ */
+function checkAdminToken(req, res) {
+  if (!config.sapoWebhookToken || req.query.token !== config.sapoWebhookToken) {
+    res.status(401).json({ ok: false, reason: 'invalid or missing token' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/admin/webhooks', async (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  try {
+    const result = await sapo.listWebhooks();
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err) });
+  }
+});
+
+app.get('/admin/register-webhook', async (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  try {
+    const address = `${config.appBaseUrl}/webhooks/sapo/order-created?token=${encodeURIComponent(
+      config.sapoWebhookToken
+    )}`;
+    const result = await sapo.registerWebhook({ topic: 'orders/create', address });
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err) });
+  }
+});
+
 app.listen(config.port, () => {
   console.log(`9pay-sapo-bridge listening on :${config.port}`);
 });
