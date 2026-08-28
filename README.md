@@ -36,36 +36,60 @@ Customer redirected to 9Pay's hosted "portal" page, enters card details
         └── 9Pay → browser redirect → GET /9pay/return (display only)
 ```
 
-### Two ways to get the customer to `/pay/:orderId`
+### Sapo cannot show "9Pay" as a checkout option — confirmed the hard way
 
-You need to pick one — the code supports both, nothing else changes:
+Sapo's checkout only ever shows three kinds of payment method: its own
+integrated App Store gateways (VNPAY, MoMo, KBank, ...), exactly one manual
+"Chuyển khoản" bank-transfer entry, and COD. Anything else you add from
+Cấu hình > Phương thức thanh toán > "Thêm phương thức" (any `Loại phương
+thức` other than "Chuyển khoản") lands under "Phương thức khác", which Sapo
+reserves for admin/POS bookkeeping only — it **never** appears on the real
+storefront checkout, confirmed live against `monatblue.com/checkout`. So
+there is no way, via Sapo's own settings, to add a genuinely new
+customer-selectable "pay by 9Pay card" option.
 
-1. **Email/SMS link (simpler, ships today).** Sapo calls
-   `POST /webhooks/sapo/order-created` right after checkout; the handler
-   (stubbed in `server.js`, marked `TODO`) sends the customer a message
-   containing `https://<your-domain>/pay/<order_id>`. No changes to the
-   Sapo storefront theme required. Downside: payment isn't part of the
-   checkout flow itself — the customer has to open a link afterwards.
+The workaround: repurpose the one existing "Chuyển khoản" method's display
+name (`config.ninePay.triggerGateway`, env `NINEPAY_TRIGGER_GATEWAY`) as the
+de-facto "pay via 9Pay" choice. Sapo does record whichever method the
+customer actually picked on the order's `gateway` field at the moment the
+order is created (confirmed against real orders: COD orders show
+`gateway: "Thu hộ (COD)"`, bank-transfer orders show `gateway: "Chuyển
+khoản"`), so every 9Pay-specific behavior below checks that field first and
+only acts when it matches exactly — an order placed with COD or a real bank
+transfer is left completely alone.
 
-2. **Near-instant redirect (better UX, this is the one we're using).**
-   Turns out the Sapo order-confirmation page (`/checkout/thankyou/<token>`)
-   isn't part of the theme at all — it's a system page, not a template
-   asset (confirmed: none of the theme's 529 asset files match it). So
-   this doesn't use theme editing. Instead it uses Sapo's **ScriptTag API**
+### Getting the customer to the 9Pay payment link — both run in parallel
+
+1. **Near-instant redirect on the confirmation page.** The Sapo
+   order-confirmation page (`/checkout/thankyou/<token>`) isn't part of the
+   theme at all — it's a system page, not a template asset (confirmed: none
+   of the theme's 529 asset files match it). So this doesn't use theme
+   editing. Instead it uses Sapo's **ScriptTag API**
    (`POST /admin/script_tags.json`, mirrors Shopify's) to inject
    `GET /static/redirect.js` (see `lib/redirect-script.js`) on every
    storefront page load. Sapo's ScriptTag has no per-page scope (unlike
    Shopify's `display_scope: "order_status"`), so the script itself checks
    `location.pathname` for `/checkout/thankyou/<token>` before doing
-   anything, then calls `GET /pay/by-token/<token>` on this service (the
-   confirmation page doesn't expose the numeric Sapo order id anywhere,
-   only that token — `/pay/by-token` resolves it server-side by scanning
-   recent orders for a matching `token` field, since Sapo's Orders API
-   doesn't support filtering by it directly).
+   anything, then calls `GET /pay/check/by-token/<token>` **via `fetch`,
+   not a page navigation** (the confirmation page doesn't expose the
+   numeric Sapo order id anywhere, only that token — `by-token` resolves it
+   server-side by scanning recent orders for a matching `token` field,
+   since Sapo's Orders API doesn't support filtering by it directly). The
+   server only answers `{redirect: true, url}` when the order's `gateway`
+   matches `NINEPAY_TRIGGER_GATEWAY`; only then does the script navigate
+   the page away. Any other order's confirmation page is left untouched.
 
-Either way, the checkout itself should use a placeholder payment method in
-Sapo (e.g. "Chuyển khoản" / "Thanh toán online") since there's no native
-9Pay option to select.
+2. **Payment-link email, as a backup.** Sapo calls
+   `POST /webhooks/sapo/order-created` right after checkout; the handler
+   re-fetches the order, and — again only when its `gateway` matches
+   `NINEPAY_TRIGGER_GATEWAY` — POSTs the customer's email and payment link
+   to `EMAIL_LINK_WEBHOOK_URL`, an n8n workflow that owns the real SMTP
+   credentials and sends the actual email (this service never touches SMTP
+   secrets). This fires server-side at order creation, independent of
+   whatever happens in the customer's browser afterward — a genuine backup
+   if the redirect script never runs (closed tab, JS disabled, ad blocker),
+   not just a duplicate of the same trigger. Leave `EMAIL_LINK_WEBHOOK_URL`
+   unset to disable this channel; the redirect keeps working either way.
 
 ## What's verified vs. what isn't
 
@@ -151,7 +175,7 @@ To check what's registered or remove it: `node scripts/register-scripttag.js --l
 tags — if `APP_BASE_URL` ever changes, delete the old one and register a
 new one.
 
-### Registering the Sapo webhook (only needed for flow 1, not used here)
+### Registering the Sapo webhook (needed for the payment-link email backup)
 
 ```bash
 node scripts/register-sapo-webhook.js
@@ -159,7 +183,9 @@ node scripts/register-sapo-webhook.js
 
 This calls `POST /admin/webhooks.json` on your store for the
 `orders/create` topic, pointing at `/webhooks/sapo/order-created` on this
-service.
+service. Only needed if you're using the parallel payment-link email
+(`EMAIL_LINK_WEBHOOK_URL` set) — the on-page redirect alone doesn't need
+it.
 
 ## Files
 
