@@ -1,0 +1,17 @@
+{
+  "name": "9pay-sapo-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Middleware bridging a Sapo storefront to 9Pay's international card 'Redirect' payment gateway (Sapo has no built-in 9Pay app, so this fills that gap).",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
